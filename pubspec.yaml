@@ -1,0 +1,41 @@
+name: arogya_sos_app
+description: A new Flutter project for ArogyaSOS+.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  url_launcher: ^6.3.0
+  geolocator: ^12.0.0 # Ensure this is the version you are using, or latest
+  shared_preferences: ^2.2.3 # Ensure this is the version you are using, or latest
+  geocoding: ^2.2.1     # Ensure this is the version you are using, or latest
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+
+  # To add assets to your application, add an assets section here:
+  assets:             # <--- UNCOMMENTED, and exactly 2 spaces from 'flutter:'
+    - fonts/          # <--- Exactly 2 spaces from 'assets:'
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  fonts:              # <--- Exactly 2 spaces from 'flutter:', same level as 'assets:'
+    - family: Inter   # <--- Exactly 2 spaces from 'fonts:'
+      fonts:          # <--- Exactly 4 spaces from 'fonts:' (the one above)
+        - asset: fonts/Inter-Regular.ttf  # <--- Exactly 6 spaces from 'fonts:' (the first one)
+        - asset: fonts/Inter-Bold.ttf
+          weight: 700
