@@ -21,12 +21,20 @@ class _EmergencySOSScreenState extends State<EmergencySOSScreen> {
   String _currentCoordinates = ''; // To display coordinates (latitude, longitude)
   String _areaName = ''; // To display area name separately
   final FirebaseFCMService _fcmService = FirebaseFCMService(); // Firebase FCM service instance
+  
+  // Stream subscriptions for real-time updates
+  StreamSubscription<Map<String, dynamic>?>? _sosNotificationSubscription;
+  StreamSubscription<Map<String, String>>? _contactTokensSubscription;
+  String? _notificationStatus;
+  int? _notificationSuccessCount;
+  int? _notificationFailureCount;
 
   @override
   void initState() {
     super.initState();
     _getCurrentLocation(); // Fetch location when screen initializes
     _initializeFCM(); // Initialize FCM service
+    _setupRealtimeListeners(); // Setup real-time database listeners
   }
 
   // Initialize FCM and request permissions
@@ -262,7 +270,7 @@ class _EmergencySOSScreenState extends State<EmergencySOSScreen> {
     try {
       // Queue SOS notification in Realtime Database
       // Cloud Functions will process this and send FCM notifications to all registered emergency contacts
-      success = await _fcmService.sendSOSNotification(
+      final notificationId = await _fcmService.sendSOSNotification(
         message: fullAlertMessage,
         location: _currentLocation,
         coordinates: _currentCoordinates,
@@ -271,9 +279,14 @@ class _EmergencySOSScreenState extends State<EmergencySOSScreen> {
         locationLink: locationLink,
       );
       
-      if (success) {
-        debugPrint('Emergency SOS notification queued successfully');
+      if (notificationId != null) {
+        success = true;
+        debugPrint('Emergency SOS notification queued successfully: $notificationId');
+        
+        // Start listening to notification status changes
+        _startListeningToSOSNotification(notificationId);
       } else {
+        success = false;
         debugPrint('Failed to queue emergency SOS notification');
       }
     } catch (e) {
@@ -339,7 +352,79 @@ class _EmergencySOSScreenState extends State<EmergencySOSScreen> {
   @override
   void dispose() {
     _timer?.cancel(); // Cancel timer when widget is disposed
+    _sosNotificationSubscription?.cancel(); // Cancel SOS notification listener
+    _contactTokensSubscription?.cancel(); // Cancel contact tokens listener
     super.dispose();
+  }
+
+  // Setup real-time database listeners
+  void _setupRealtimeListeners() {
+    // Listen to emergency contact token changes
+    _contactTokensSubscription = _fcmService.watchEmergencyContactTokens().listen(
+      (tokens) {
+        debugPrint('Emergency contact tokens updated: ${tokens.length} tokens');
+        // You can update UI here if needed
+      },
+      onError: (error) {
+        debugPrint('Error listening to contact tokens: $error');
+      },
+    );
+  }
+
+  // Start listening to SOS notification status
+  void _startListeningToSOSNotification(String notificationId) {
+    // Cancel existing subscription if any
+    _sosNotificationSubscription?.cancel();
+    
+    // Listen to notification status changes
+    _sosNotificationSubscription = _fcmService
+        .watchSOSNotificationStatus(notificationId)
+        .listen(
+      (notificationData) {
+        if (notificationData != null && mounted) {
+          setState(() {
+            _notificationStatus = notificationData['status'] as String?;
+            _notificationSuccessCount = notificationData['successCount'] as int?;
+            _notificationFailureCount = notificationData['failureCount'] as int?;
+          });
+          
+          // Show status updates to user
+          if (_notificationStatus == 'processing') {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Processing emergency alert...'),
+                duration: Duration(seconds: 2),
+                backgroundColor: Colors.blue,
+              ),
+            );
+          } else if (_notificationStatus == 'completed') {
+            final successCount = _notificationSuccessCount ?? 0;
+            final failureCount = _notificationFailureCount ?? 0;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Emergency alert sent! Success: $successCount, Failed: $failureCount',
+                ),
+                duration: const Duration(seconds: 4),
+                backgroundColor: Colors.green,
+              ),
+            );
+          } else if (_notificationStatus == 'failed') {
+            final error = notificationData['error'] as String? ?? 'Unknown error';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Failed to send alert: $error'),
+                duration: const Duration(seconds: 4),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint('Error listening to SOS notification: $error');
+      },
+    );
   }
 
   @override

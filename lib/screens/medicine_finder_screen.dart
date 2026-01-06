@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'dart:async'; // Import for StreamSubscription
 import 'package:url_launcher/url_launcher.dart'; // Import for url_launcher
 import 'package:geolocator/geolocator.dart'; // Import for geolocator
 import 'package:shared_preferences/shared_preferences.dart'; // Import for shared_preferences
 import 'package:firebase_database/firebase_database.dart'; // Fetch pharmacies from Firebase RTDB
-import 'dart:math' as math; // Import for distance calculation
+import 'package:firebase_core/firebase_core.dart'; // Required for Firebase.app() in instanceFor
 
 class MedicineFinderScreen extends StatefulWidget {
   const MedicineFinderScreen({super.key});
@@ -21,12 +22,103 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
   bool _isLoadingPharmacies = true;
   String? _pharmacyError;
   List<Map<String, dynamic>> _pharmacies = [];
+  StreamSubscription<DatabaseEvent>? _pharmaciesSubscription;
+  StreamSubscription<DatabaseEvent>? _pharmaciesChildChangedSubscription;
+  // Explicitly bind to the project's RTDB instance (avoids using a wrong/default URL)
+  final FirebaseDatabase _database = FirebaseDatabase.instanceFor(
+    app: Firebase.app(),
+    databaseURL: 'https://arogyasos-c23e6-default-rtdb.firebaseio.com',
+  );
 
   @override
   void initState() {
     super.initState();
+    _initializeDatabase(); // Ensure live reads (no disk cache) before fetching
+  }
+
+  @override
+  void dispose() {
+    _pharmaciesSubscription?.cancel(); // Cancel pharmacy listener when widget is disposed
+    _pharmaciesChildChangedSubscription?.cancel();
+    super.dispose();
+  }
+
+  // Initialize RTDB without disk caching, then start fetching/listening
+  Future<void> _initializeDatabase() async {
+    try {
+      _database.setPersistenceEnabled(false);
+    } catch (e) {
+      debugPrint('Failed to disable RTDB persistence: $e');
+    }
+
+    // Start operations after persistence setting is applied
     _getUserLocation();
     _fetchPharmacies();
+    _setupPharmaciesListener(); // Setup real-time listener for pharmacies
+  }
+
+  // Setup real-time listener for pharmacies data changes
+  void _setupPharmaciesListener() {
+    // Avoid local caching; always read directly from the backend
+    final pharmaciesRef = _database.ref('pharmacies');
+    
+    // Listen to value changes (updates when any pharmacy data changes)
+    _pharmaciesSubscription = pharmaciesRef.onValue.listen(
+      (DatabaseEvent event) {
+        try {
+          final List<Map<String, dynamic>> pharmaciesList =
+              _parsePharmaciesSnapshot(event.snapshot.value);
+
+          if (mounted) {
+            setState(() {
+              _pharmacies = pharmaciesList;
+              _isLoadingPharmacies = false;
+              _pharmacyError = null;
+              _sortByDistance();
+            });
+          }
+        } catch (e) {
+          debugPrint('Error parsing pharmacies snapshot: $e');
+          if (mounted) {
+            setState(() {
+              _pharmacyError = 'Error parsing pharmacy updates: $e';
+              _isLoadingPharmacies = false;
+            });
+          }
+        }
+      },
+      onError: (error) {
+        debugPrint('Error listening to pharmacies: $error');
+        if (mounted) {
+          setState(() {
+            _pharmacyError = 'Error listening to pharmacy updates: $error';
+          });
+        }
+      },
+    );
+
+    // Fallback: explicitly handle child updates (covers partial writes)
+    _pharmaciesChildChangedSubscription = pharmaciesRef.onChildChanged.listen(
+      (DatabaseEvent event) {
+        final key = event.snapshot.key;
+        final value = event.snapshot.value;
+        if (key == null || value is! Map) return;
+
+        final index = _pharmacies.indexWhere((p) => p['id'] == key.toString());
+        final updated = _parsePharmacyNode(key, value);
+        if (index >= 0) {
+          setState(() {
+            _pharmacies[index] = updated;
+            _isLoadingPharmacies = false;
+            _pharmacyError = null;
+            _sortByDistance();
+          });
+        }
+      },
+      onError: (error) {
+        debugPrint('Error onChildChanged pharmacies: $error');
+      },
+    );
   }
 
   // Method to get user location from shared_preferences or GPS
@@ -43,7 +135,6 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
         _userLongitude = savedLng;
         _isLoadingLocation = false;
       });
-      _calculateDistances();
       return;
       }
 
@@ -89,8 +180,6 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
       await prefs.setDouble('user_latitude', position.latitude);
       await prefs.setDouble('user_longitude', position.longitude);
       
-      // Calculate distances with new location
-      _calculateDistances();
     } catch (e) {
       setState(() {
         _isLoadingLocation = false;
@@ -98,23 +187,72 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
     }
   }
 
-  // Calculate distance between two coordinates using Haversine formula
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-    const double earthRadius = 6371; // Radius of the earth in km
-    double dLat = _degreesToRadians(lat2 - lat1);
-    double dLon = _degreesToRadians(lon2 - lon1);
-    double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_degreesToRadians(lat1)) *
-            math.cos(_degreesToRadians(lat2)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-    double distance = earthRadius * c; // Distance in km
-    return distance;
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
   }
 
-  double _degreesToRadians(double degrees) {
-    return degrees * (math.pi / 180);
+  // Convert raw RTDB payload (Map/List) into a pharmacy list the UI expects
+  List<Map<String, dynamic>> _parsePharmaciesSnapshot(dynamic raw) {
+    if (raw == null) return [];
+
+    // RTDB can return a Map (recommended) or List (array-like). Normalize to Map.
+    Map<dynamic, dynamic> pharmaciesData = {};
+    if (raw is Map<dynamic, dynamic>) {
+      pharmaciesData = raw;
+    } else if (raw is List<dynamic>) {
+      pharmaciesData = raw.asMap().map((key, value) => MapEntry(key, value));
+    }
+
+    final List<Map<String, dynamic>> pharmaciesList = [];
+
+    pharmaciesData.forEach((key, value) {
+      if (value is Map) {
+        pharmaciesList.add(_parsePharmacyNode(key, value));
+      }
+    });
+
+    return pharmaciesList;
+  }
+
+  Map<String, dynamic> _parsePharmacyNode(dynamic key, Map value) {
+    final pharmacy = Map<String, dynamic>.from(value);
+    final location = pharmacy['location'] as Map<dynamic, dynamic>?;
+    final distanceValue = pharmacy['distance'] ??
+        pharmacy['distanceKm'] ??
+        pharmacy['distance_km'] ??
+        pharmacy['distance_kms'];
+    final double? distance = _toDouble(distanceValue);
+    final distanceText = pharmacy['distanceText'] ?? pharmacy['distance_text'];
+
+    double? latitude;
+    double? longitude;
+    if (location != null) {
+      latitude = (location['latitude'] as num?)?.toDouble();
+      longitude = (location['longitude'] as num?)?.toDouble();
+    }
+
+    final isOpenRaw = pharmacy['isOpen'];
+    final isOpen = isOpenRaw == true || isOpenRaw == 'true';
+
+    return {
+      'id': pharmacy['id'] ?? key.toString(),
+      'name': pharmacy['name'] ?? 'Unknown Pharmacy',
+      'address': pharmacy['address'] ?? 'Address not available',
+      'rating': (pharmacy['rating'] ?? 0.0).toString(),
+      'status': isOpen ? 'Open' : 'Closed',
+      'statusColor': isOpen ? Colors.green : Colors.red,
+      'phone': pharmacy['contactNumber'] ?? '',
+      'latitude': latitude,
+      'longitude': longitude,
+      'distance': distance,
+      'distanceString': distance != null
+          ? _formatDistance(distance)
+          : (distanceText ?? 'Distance unknown'),
+      'distanceText': distanceText ?? 'Distance unknown',
+    };
   }
 
   // Format distance for display
@@ -134,49 +272,19 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
         _pharmacyError = null;
       });
 
-      final DatabaseReference pharmaciesRef = FirebaseDatabase.instance.ref('pharmacies');
+      final DatabaseReference pharmaciesRef = _database.ref('pharmacies');
       final DataSnapshot snapshot = await pharmaciesRef.get();
 
       if (snapshot.exists && snapshot.value != null) {
-        final Map<dynamic, dynamic> pharmaciesData = snapshot.value as Map<dynamic, dynamic>;
-        final List<Map<String, dynamic>> pharmaciesList = [];
-
-        pharmaciesData.forEach((key, value) {
-          if (value is Map) {
-            final pharmacy = Map<String, dynamic>.from(value);
-            final location = pharmacy['location'] as Map<dynamic, dynamic>?;
-            
-            // Extract location coordinates
-            double? latitude;
-            double? longitude;
-            if (location != null) {
-              latitude = (location['latitude'] as num?)?.toDouble();
-              longitude = (location['longitude'] as num?)?.toDouble();
-            }
-
-            // Map Firebase data to UI format
-            pharmaciesList.add({
-              'id': pharmacy['id'] ?? key.toString(),
-              'name': pharmacy['name'] ?? 'Unknown Pharmacy',
-              'address': pharmacy['address'] ?? 'Address not available',
-              'rating': (pharmacy['rating'] ?? 0.0).toString(),
-              'status': (pharmacy['isOpen'] == true) ? 'Open' : 'Closed',
-              'statusColor': (pharmacy['isOpen'] == true) ? Colors.green : Colors.red,
-              'phone': pharmacy['contactNumber'] ?? '',
-              'latitude': latitude,
-              'longitude': longitude,
-              'distanceText': pharmacy['distanceText'] ?? 'Distance unknown',
-            });
-          }
-        });
+        final pharmaciesList = _parsePharmaciesSnapshot(snapshot.value);
 
         setState(() {
           _pharmacies = pharmaciesList;
           _isLoadingPharmacies = false;
         });
 
-        // Calculate distances if user location is available
-        _calculateDistances();
+        // Sort by distance coming from backend
+        _sortByDistance();
       } else {
         setState(() {
           _pharmacies = [];
@@ -193,38 +301,12 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
     }
   }
 
-  // Calculate distances for pharmacies if user location is available
-  void _calculateDistances() {
-    if (_userLatitude == null || _userLongitude == null) {
-      return;
-    }
-
-    setState(() {
-      for (var pharmacy in _pharmacies) {
-        final double? lat = pharmacy['latitude'] as double?;
-        final double? lng = pharmacy['longitude'] as double?;
-
-        if (lat != null && lng != null) {
-          double distance = _calculateDistance(
-            _userLatitude!,
-            _userLongitude!,
-            lat,
-            lng,
-          );
-          pharmacy['distance'] = distance;
-          pharmacy['distanceString'] = _formatDistance(distance);
-        } else {
-          pharmacy['distance'] = 999.0;
-          pharmacy['distanceString'] = pharmacy['distanceText'] ?? 'Distance unknown';
-        }
-      }
-
-      // Sort pharmacies by distance
-      _pharmacies.sort((a, b) {
-        final double distA = a['distance'] as double? ?? 999.0;
-        final double distB = b['distance'] as double? ?? 999.0;
-        return distA.compareTo(distB);
-      });
+  // Sort pharmacies by the backend-provided distance field (km)
+  void _sortByDistance() {
+    _pharmacies.sort((a, b) {
+      final double distA = a['distance'] as double? ?? 999.0;
+      final double distB = b['distance'] as double? ?? 999.0;
+      return distA.compareTo(distB);
     });
   }
 
@@ -366,10 +448,7 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
                         setState(() {
                           _selectedDistanceFilter = newValue;
                         });
-                        // Recalculate distances in case location was just obtained
-                        if (_userLatitude != null && _userLongitude != null) {
-                          _calculateDistances();
-                        }
+                        _sortByDistance();
                       },
                     ),
                   ),

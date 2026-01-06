@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_database/firebase_database.dart';
@@ -159,7 +160,9 @@ class FirebaseFCMService {
   /// [coordinates] - GPS coordinates
   /// [medicalInfo] - Medical information
   /// [userName] - Name of the user in distress
-  Future<bool> sendSOSNotification({
+  /// 
+  /// Returns the notification ID if successful, null otherwise
+  Future<String?> sendSOSNotification({
     required String message,
     required String location,
     required String coordinates,
@@ -196,14 +199,14 @@ class FirebaseFCMService {
       
       if (response.statusCode == 200) {
         print('SOS notification queued: $notificationId');
-        return true;
+        return notificationId;
       } else {
         print('Error queueing SOS notification: ${response.statusCode} - ${response.body}');
-        return false;
+        return null;
       }
     } catch (e) {
       print('Error sending SOS notification: $e');
-      return false;
+      return null;
     }
   }
 
@@ -270,5 +273,165 @@ class FirebaseFCMService {
         print('Message also contained a notification: ${message.notification}');
       }
     });
+  }
+
+  /// Listen to SOS notification status changes
+  /// 
+  /// [notificationId] - The ID of the SOS notification to monitor
+  /// Returns a stream that emits notification status updates
+  Stream<Map<String, dynamic>?> watchSOSNotificationStatus(String notificationId) {
+    return _database
+        .child(_sosNotificationsPath)
+        .child(notificationId)
+        .onValue
+        .map((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final data = event.snapshot.value as Map<dynamic, dynamic>;
+        return Map<String, dynamic>.from(data);
+      }
+      return null;
+    });
+  }
+
+  /// Listen to all SOS notifications for a specific user
+  /// 
+  /// Returns a stream that emits all SOS notifications for the current user
+  Stream<List<Map<String, dynamic>>> watchUserSOSNotifications() {
+    return _database
+        .child(_sosNotificationsPath)
+        .orderByChild('userId')
+        .onValue
+        .asyncExpand((event) async* {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final userId = await _getUserId();
+        final data = event.snapshot.value as Map<dynamic, dynamic>;
+        final List<Map<String, dynamic>> notifications = [];
+        
+        data.forEach((key, value) {
+          if (value is Map && value['userId'] == userId) {
+            final notification = Map<String, dynamic>.from(value);
+            notification['id'] = key.toString();
+            notifications.add(notification);
+          }
+        });
+        
+        // Sort by timestamp (newest first)
+        notifications.sort((a, b) {
+          final timestampA = a['timestamp'] as int? ?? 0;
+          final timestampB = b['timestamp'] as int? ?? 0;
+          return timestampB.compareTo(timestampA);
+        });
+        
+        yield notifications;
+      } else {
+        yield <Map<String, dynamic>>[];
+      }
+    });
+  }
+
+  /// Listen to changes in emergency contact FCM tokens
+  /// 
+  /// Returns a stream that emits a map of contact phone numbers to their FCM tokens
+  Stream<Map<String, String>> watchEmergencyContactTokens() {
+    return _database
+        .child(_fcmTokensPath)
+        .child('emergencyContacts')
+        .onValue
+        .asyncExpand((event) async* {
+      final userId = await _getUserId();
+      final Map<String, String> tokens = {};
+      
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final data = event.snapshot.value as Map<dynamic, dynamic>;
+        final userTokens = data[userId];
+        
+        if (userTokens is Map) {
+          userTokens.forEach((key, value) {
+            if (value is Map && value['token'] != null) {
+              final phone = value['phone'] as String? ?? key.toString();
+              tokens[phone] = value['token'] as String;
+            }
+          });
+        }
+      }
+      
+      yield tokens;
+    });
+  }
+
+  /// Listen to changes in user's own FCM token
+  /// 
+  /// Returns a stream that emits the user's FCM token when it changes
+  Stream<String?> watchUserFCMToken() {
+    return _database
+        .child(_fcmTokensPath)
+        .onValue
+        .asyncExpand((event) async* {
+      final userId = await _getUserId();
+      
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final data = event.snapshot.value as Map<dynamic, dynamic>;
+        final userData = data[userId];
+        
+        if (userData is Map && userData['token'] != null) {
+          yield userData['token'] as String;
+        } else {
+          yield null;
+        }
+      } else {
+        yield null;
+      }
+    });
+  }
+
+  /// Listen to any changes in a specific database path
+  /// 
+  /// [path] - The database path to listen to (e.g., 'users/123/profile')
+  /// Returns a stream that emits the data at the specified path
+  Stream<dynamic> watchDatabasePath(String path) {
+    return _database
+        .child(path)
+        .onValue
+        .map((event) {
+      if (event.snapshot.exists) {
+        return event.snapshot.value;
+      }
+      return null;
+    });
+  }
+
+  /// Listen to child changes in a specific database path
+  /// 
+  /// [path] - The database path to listen to (e.g., 'users/123/emergencyContacts')
+  /// Returns a stream that emits events when children are added, changed, or removed
+  /// Note: This returns the onChildAdded stream. For more granular control, use individual streams.
+  Stream<DatabaseEvent> watchChildChanges(String path) {
+    return _database.child(path).onChildAdded;
+  }
+  
+  /// Listen to child added events in a specific database path
+  Stream<DatabaseEvent> watchChildAdded(String path) {
+    return _database.child(path).onChildAdded;
+  }
+  
+  /// Listen to child changed events in a specific database path
+  Stream<DatabaseEvent> watchChildChanged(String path) {
+    return _database.child(path).onChildChanged;
+  }
+  
+  /// Listen to child removed events in a specific database path
+  Stream<DatabaseEvent> watchChildRemoved(String path) {
+    return _database.child(path).onChildRemoved;
+  }
+
+  /// Listen to value changes at a path with a callback (onDataChange equivalent)
+  ///
+  /// Returns the subscription so callers can cancel it in dispose().
+  StreamSubscription<DatabaseEvent> onDataChange(
+    String path,
+    void Function(DatabaseEvent event) onData, {
+    Function? onError,
+  }) {
+    return _database.child(path).onValue.listen(onData, onError: onError);
   }
 }
