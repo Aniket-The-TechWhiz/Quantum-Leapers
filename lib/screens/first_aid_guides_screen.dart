@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/first_aid_guide.dart';
+import '../services/firebase_service.dart';
 
 class FirstAidGuidesScreen extends StatefulWidget {
   const FirstAidGuidesScreen({super.key});
@@ -8,75 +11,44 @@ class FirstAidGuidesScreen extends StatefulWidget {
 }
 
 class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
-  // A map to store the download status of each guide, using its title as a key.
-  // In a real app, this would be persisted (e.g., using shared_preferences or a database).
-  final Map<String, bool> _downloadStatus = {};
+  final FirebaseService _firebaseService = FirebaseService();
+  String? _selectedLanguage = 'English';
+  String? _selectedCategory = 'All Categories';
+  Map<String, bool> _downloadStatus = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDownloadStatus();
+  }
+
+  // Load download status from SharedPreferences
+  Future<void> _loadDownloadStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final keys = prefs.getKeys();
+    final Map<String, bool> status = {};
+    for (var key in keys) {
+      if (key.startsWith('guide_download_')) {
+        final guideId = key.replaceFirst('guide_download_', '');
+        status[guideId] = prefs.getBool(key) ?? false;
+      }
+    }
+    setState(() {
+      _downloadStatus = status;
+    });
+  }
+
+  // Save download status to SharedPreferences
+  Future<void> _saveDownloadStatus(String guideId, bool isDownloaded) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('guide_download_$guideId', isDownloaded);
+    setState(() {
+      _downloadStatus[guideId] = isDownloaded;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final List<Map<String, dynamic>> guides = [
-      {
-        'title': 'Snake Bite Treatment',
-        'tags': ['Emergency', 'Poisoning'],
-        'size': '2.5 MB',
-        'steps': 7,
-        'warnings': 4,
-        'treatmentContent': [
-          'Step 1: Keep the person calm and still. This helps slow the spread of venom.',
-          'Step 2: Remove any tight clothing or jewelry from the area of the bite.',
-          'Step 3: Keep the bitten limb lower than the heart.',
-          'Step 4: Clean the wound with soap and water.',
-          'Step 5: Cover the bite with a clean, dry dressing.',
-          'Step 6: Get medical help immediately. Call emergency services.',
-          'Step 7: Do NOT try to cut the bite or suck out the venom.',
-        ],
-        'warningContent': [
-          'Warning 1: Do NOT apply ice or a tourniquet.',
-          'Warning 2: Do NOT try to catch the snake.',
-          'Warning 3: Do NOT drink alcohol or caffeine.',
-          'Warning 4: Do NOT try to give the person pain medication unless directed by medical personnel.',
-        ],
-      },
-      {
-        'title': 'Asthma Attack Response',
-        'tags': ['Emergency', 'Breathing'],
-        'size': '1.8 MB',
-        'steps': 6,
-        'warnings': 3,
-        'treatmentContent': [
-          'Step 1: Help the person sit upright and loosen any tight clothing.',
-          'Step 2: Help them use their inhaler (reliever puffer). Shake it well and give one puff every minute.',
-          'Step 3: If no improvement after 4 puffs, or if they don\'t have an inhaler, call emergency services (e.g., 108).',
-          'Step 4: Continue giving one puff of the inhaler every minute until help arrives or breathing improves.',
-          'Step 5: Reassure the person and keep them calm.',
-          'Step 6: Monitor their breathing and level of consciousness.',
-        ],
-        'warningContent': [
-          'Warning 1: Do NOT leave the person alone.',
-          'Warning 2: Do NOT lie the person down.',
-          'Warning 3: Do NOT allow the person to panic, which can worsen the attack.',
-        ],
-      },
-      {
-        'title': 'Heart Attack First Aid',
-        'tags': ['Emergency', 'Cardiac'],
-        'size': '3.1 MB',
-        'steps': 5,
-        'warnings': 2,
-        'treatmentContent': [
-          'Step 1: Call emergency services immediately (e.g., 108).',
-          'Step 2: Help the person to a comfortable, seated position, preferably with legs bent.',
-          'Step 3: Loosen any tight clothing around their neck or chest.',
-          'Step 4: If the person is conscious and not allergic, give them aspirin (chewable, 300mg if available) as directed by emergency dispatcher.',
-          'Step 5: Stay with the person and reassure them until medical help arrives.',
-        ],
-        'warningContent': [
-          'Warning 1: Do NOT let the person drive themselves to the hospital.',
-          'Warning 2: Do NOT force aspirin on an unconscious person or someone who is allergic.',
-        ],
-      },
-    ];
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('First Aid Guides'),
@@ -100,6 +72,7 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                       hint: const Text('English'),
+                      value: _selectedLanguage,
                       items: <String>['English', 'Hindi', 'Marathi']
                           .map<DropdownMenuItem<String>>((String value) {
                         return DropdownMenuItem<String>(
@@ -108,7 +81,9 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                         );
                       }).toList(),
                       onChanged: (String? newValue) {
-                        // Handle language change (for demo, no effect)
+                        setState(() {
+                          _selectedLanguage = newValue;
+                        });
                       },
                     ),
                   ),
@@ -125,7 +100,8 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                       hint: const Text('All Categories'),
-                      items: <String>['All Categories', 'Emergency', 'Poisoning', 'Breathing', 'Cardiac'] // Added Cardiac
+                      value: _selectedCategory,
+                      items: <String>['All Categories', 'Emergency', 'Poisoning', 'Breathing', 'Cardiac']
                           .map<DropdownMenuItem<String>>((String value) {
                         return DropdownMenuItem<String>(
                           value: value,
@@ -133,20 +109,76 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                         );
                       }).toList(),
                       onChanged: (String? newValue) {
-                        // Handle category change (for demo, no effect)
+                        setState(() {
+                          _selectedCategory = newValue;
+                        });
                       },
                     ),
                   ),
                 ],
               ),
             ),
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: guides.length,
-              itemBuilder: (context, index) {
-                final guide = guides[index];
-                final isDownloaded = _downloadStatus[guide['title']] ?? false;
+            StreamBuilder<List<FirstAidGuide>>(
+              stream: _firebaseService.getFirstAidGuides(
+                language: _selectedLanguage,
+                category: _selectedCategory,
+              ),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(32.0),
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
+
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32.0),
+                      child: Column(
+                        children: [
+                          Icon(Icons.error_outline, size: 48, color: Colors.red[300]),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Error loading guides: ${snapshot.error}',
+                            style: TextStyle(color: Colors.red[700]),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32.0),
+                      child: Column(
+                        children: [
+                          Icon(Icons.book_outlined, size: 48, color: Colors.grey[400]),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No guides found',
+                            style: TextStyle(color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                final guides = snapshot.data!;
+
+                return ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: guides.length,
+                  itemBuilder: (context, index) {
+                    final guide = guides[index];
+                    final isDownloaded = _downloadStatus[guide.id] ?? false;
 
                 return Card(
                   child: Padding(
@@ -164,12 +196,12 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                guide['title'] as String,
+                                guide.title,
                                 style: const TextStyle(
                                     fontSize: 18, fontWeight: FontWeight.bold),
                               ),
                             ),
-                            ...(guide['tags'] as List<String>).map((tag) => Padding(
+                            ...guide.tags.map((tag) => Padding(
                               padding: const EdgeInsets.only(left: 4.0),
                               child: Chip(
                                 label: Text(tag, style: const TextStyle(fontSize: 10)),
@@ -184,18 +216,16 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                           children: [
                             Icon(Icons.description, color: Colors.grey[700], size: 20),
                             const SizedBox(width: 8),
-                            Text('Offline Guide - ${guide['size'] as String}'),
+                            Text('Offline Guide - ${guide.size}'),
                             const Spacer(),
                             ElevatedButton.icon(
                               onPressed: () {
-                                setState(() {
-                                  _downloadStatus[guide['title'] as String] = !isDownloaded;
-                                });
+                                _saveDownloadStatus(guide.id, !isDownloaded);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
                                     content: Text(isDownloaded
-                                        ? '${guide['title']} removed from offline.'
-                                        : '${guide['title']} downloaded for offline access.'),
+                                        ? '${guide.title} removed from offline.'
+                                        : '${guide.title} downloaded for offline access.'),
                                   ),
                                 );
                               },
@@ -222,10 +252,10 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                               children: [
                                 Icon(Icons.list_alt, color: Colors.grey[700], size: 20),
                                 const SizedBox(width: 8),
-                                Text('Treatment Steps (${guide['steps'] as int})'),
+                                Text('Treatment Steps (${guide.steps})'),
                               ],
                             ),
-                            children: (guide['treatmentContent'] as List<String>).map((step) =>
+                            children: guide.treatmentContent.map((step) =>
                                 Padding(
                                   padding: const EdgeInsets.only(left: 36.0, bottom: 8.0),
                                   child: Text(step),
@@ -238,10 +268,10 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                               children: [
                                 Icon(Icons.error_outline, color: Colors.red, size: 20),
                                 const SizedBox(width: 8),
-                                Text('Important Warnings (${guide['warnings'] as int})'),
+                                Text('Important Warnings (${guide.warnings})'),
                               ],
                             ),
-                            children: (guide['warningContent'] as List<String>).map((warning) =>
+                            children: guide.warningContent.map((warning) =>
                                 Padding(
                                   padding: const EdgeInsets.only(left: 36.0, bottom: 8.0),
                                   child: Text(warning, style: TextStyle(color: Colors.red[800])),
@@ -252,6 +282,8 @@ class _FirstAidGuidesScreenState extends State<FirstAidGuidesScreen> {
                       ],
                     ),
                   ),
+                );
+                  },
                 );
               },
             ),

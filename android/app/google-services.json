@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "236288544112",
+    "project_id": "arogyasos-c23e6",
+    "storage_bucket": "arogyasos-c23e6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:236288544112:android:ef93e6b2d96322014fd3b5",
+        "android_client_info": {
+          "package_name": "com.example.arogya_sos_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAes1SXVSo30NXtMK6tlht03QsVIcuo1kk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
