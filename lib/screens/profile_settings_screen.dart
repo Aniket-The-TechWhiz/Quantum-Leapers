@@ -5,7 +5,6 @@ import 'dart:convert'; // Required for jsonEncode/jsonDecode
 
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
-
   @override
   State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
 }
@@ -21,6 +20,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   final TextEditingController _contactNameController = TextEditingController();
   final TextEditingController _contactRelationshipController = TextEditingController();
   final TextEditingController _contactPhoneController = TextEditingController();
+  final TextEditingController _smsFunctionUrlController = TextEditingController();
 
   String? _selectedBloodType;
   bool _emergencyNotificationsEnabled = true;
@@ -48,6 +48,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       _selectedBloodType = prefs.getString('bloodType');
       _emergencyNotificationsEnabled = prefs.getBool('emergencyNotifications') ?? true;
       _locationSharingEnabled = prefs.getBool('locationSharing') ?? true;
+      _smsFunctionUrlController.text = prefs.getString('sms_function_url') ?? '';
 
       final String? contactsJson = prefs.getString('emergencyContacts');
       if (contactsJson != null) {
@@ -76,6 +77,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     }
     await prefs.setBool('emergencyNotifications', _emergencyNotificationsEnabled);
     await prefs.setBool('locationSharing', _locationSharingEnabled);
+    
+    // Save SMS function URL
+    if (_smsFunctionUrlController.text.isNotEmpty) {
+      await prefs.setString('sms_function_url', _smsFunctionUrlController.text);
+    } else {
+      await prefs.remove('sms_function_url');
+    }
 
     // Encode List<Map<String, String>> to JSON string
     await prefs.setString('emergencyContacts', jsonEncode(_emergencyContacts));
@@ -124,6 +132,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _contactNameController.dispose();
     _contactRelationshipController.dispose();
     _contactPhoneController.dispose();
+    _smsFunctionUrlController.dispose();
     super.dispose();
   }
 
@@ -386,6 +395,32 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                           _saveProfileData(); // Save setting on change
                         });
                       },
+                    ),
+                    const SizedBox(height: 16),
+                    CustomTextField(
+                      label: 'SMS Function URL (Optional)',
+                      controller: _smsFunctionUrlController,
+                      hint: 'https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/sendSMSHTTP',
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'Configure this if you\'ve deployed Firebase Cloud Functions for SMS. Leave empty to use device SMS app.',
+                              style: TextStyle(color: Colors.blue.shade800, fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
