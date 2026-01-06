@@ -331,3 +331,170 @@ exports.processSMSQueue = functions.database
     }
   });
 
+/**
+ * Realtime Database Trigger: Process SOS Notifications
+ * 
+ * This function automatically triggers when a new SOS notification is added to
+ * the Realtime Database at /sosNotifications/{notificationId}
+ * 
+ * It retrieves FCM tokens for all emergency contacts and sends push notifications
+ * 
+ * Database URL: https://arogyasos-c23e6-default-rtdb.firebaseio.com/
+ */
+exports.processSOSNotifications = functions.database
+  .ref('/sosNotifications/{notificationId}')
+  .onCreate(async (snapshot, context) => {
+    const notificationData = snapshot.val();
+    const notificationId = context.params.notificationId;
+    
+    // Only process pending notifications
+    if (notificationData.status !== 'pending') {
+      console.log(`SOS notification ${notificationId} is not pending, skipping`);
+      return null;
+    }
+    
+    const { userId, userName, message, location, coordinates, locationLink, medicalInfo } = notificationData;
+    
+    // Validate data
+    if (!userId || !message) {
+      console.error(`Invalid SOS notification data for ${notificationId}`);
+      await snapshot.ref.update({ status: 'failed', error: 'Invalid data' });
+      return null;
+    }
+    
+    try {
+      // Update status to processing
+      await snapshot.ref.update({ status: 'processing' });
+      
+      // Get FCM tokens for emergency contacts
+      const db = admin.database();
+      const tokensSnapshot = await db
+        .ref(`/fcmTokens/emergencyContacts/${userId}`)
+        .once('value');
+      
+      const tokensData = tokensSnapshot.val();
+      const tokens = [];
+      const contactNames = {};
+      
+      if (tokensData) {
+        Object.keys(tokensData).forEach((contactId) => {
+          const contactData = tokensData[contactId];
+          if (contactData && contactData.token) {
+            tokens.push(contactData.token);
+            if (contactData.name) {
+              contactNames[contactData.token] = contactData.name;
+            }
+          }
+        });
+      }
+      
+      if (tokens.length === 0) {
+        console.log(`No FCM tokens found for user ${userId}`);
+        await snapshot.ref.update({ 
+          status: 'failed', 
+          error: 'No emergency contact tokens found' 
+        });
+        return null;
+      }
+      
+      // Prepare notification payload
+      const notificationPayload = {
+        notification: {
+          title: '🚨 EMERGENCY SOS ALERT',
+          body: `${userName || 'User'} needs immediate help!`,
+          sound: 'default',
+          priority: 'high',
+        },
+        data: {
+          type: 'sos_alert',
+          userId: userId,
+          userName: userName || 'User',
+          message: message,
+          location: location || '',
+          coordinates: coordinates || '',
+          locationLink: locationLink || '',
+          medicalInfo: medicalInfo || '',
+          timestamp: notificationData.timestamp?.toString() || Date.now().toString(),
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            sound: 'default',
+            priority: 'max',
+            visibility: 'public',
+            channelId: 'emergency_alerts',
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: 1,
+              'content-available': 1,
+            },
+          },
+        },
+      };
+      
+      // Send notifications to all tokens
+      const messaging = admin.messaging();
+      const response = await messaging.sendToDevice(tokens, notificationPayload);
+      
+      // Count successes and failures
+      let successCount = 0;
+      let failureCount = 0;
+      const failedTokens = [];
+      
+      response.results.forEach((result, index) => {
+        if (result.error) {
+          failureCount++;
+          console.error(`Failed to send notification to token ${index}:`, result.error);
+          // Remove invalid tokens
+          if (result.error.code === 'messaging/invalid-registration-token' ||
+              result.error.code === 'messaging/registration-token-not-registered') {
+            failedTokens.push(tokens[index]);
+          }
+        } else {
+          successCount++;
+          console.log(`Notification sent successfully to token ${index}`);
+        }
+      });
+      
+      // Remove invalid tokens from database
+      if (failedTokens.length > 0) {
+        const tokensRef = db.ref(`/fcmTokens/emergencyContacts/${userId}`);
+        const allContacts = tokensData || {};
+        for (const [contactId, contactData] of Object.entries(allContacts)) {
+          if (failedTokens.includes(contactData.token)) {
+            await tokensRef.child(contactId).remove();
+            console.log(`Removed invalid token for contact ${contactId}`);
+          }
+        }
+      }
+      
+      console.log(`SOS notification processed. Success: ${successCount}, Failed: ${failureCount}`);
+      
+      // Update status to completed
+      await snapshot.ref.update({
+        status: 'completed',
+        successCount: successCount,
+        failureCount: failureCount,
+        tokensSent: tokens.length,
+        completedAt: admin.database.ServerValue.TIMESTAMP,
+      });
+      
+      return null;
+    } catch (error) {
+      console.error(`Error processing SOS notification ${notificationId}:`, error);
+      
+      // Update status to failed
+      await snapshot.ref.update({
+        status: 'failed',
+        error: error.message || 'Unknown error',
+        failedAt: admin.database.ServerValue.TIMESTAMP,
+      });
+      
+      return null;
+    }
+  });
+

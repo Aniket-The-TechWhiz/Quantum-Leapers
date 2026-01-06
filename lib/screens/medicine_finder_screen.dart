@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart'; // Import for url_launcher
 import 'package:geolocator/geolocator.dart'; // Import for geolocator
 import 'package:shared_preferences/shared_preferences.dart'; // Import for shared_preferences
+import 'package:firebase_database/firebase_database.dart'; // Fetch pharmacies from Firebase RTDB
 import 'dart:math' as math; // Import for distance calculation
 
 class MedicineFinderScreen extends StatefulWidget {
@@ -17,11 +18,15 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
   String? _selectedDistanceFilter;
   bool _showOpenOnly = false;
   bool _isLoadingLocation = true;
+  bool _isLoadingPharmacies = true;
+  String? _pharmacyError;
+  List<Map<String, dynamic>> _pharmacies = [];
 
   @override
   void initState() {
     super.initState();
     _getUserLocation();
+    _fetchPharmacies();
   }
 
   // Method to get user location from shared_preferences or GPS
@@ -33,12 +38,13 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
       final savedLng = prefs.getDouble('user_longitude');
 
       if (savedLat != null && savedLng != null) {
-        setState(() {
-          _userLatitude = savedLat;
-          _userLongitude = savedLng;
-          _isLoadingLocation = false;
-        });
-        return;
+      setState(() {
+        _userLatitude = savedLat;
+        _userLongitude = savedLng;
+        _isLoadingLocation = false;
+      });
+      _calculateDistances();
+      return;
       }
 
       // If not in shared_preferences, get current location
@@ -82,6 +88,9 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
       // Save to shared_preferences for future use
       await prefs.setDouble('user_latitude', position.latitude);
       await prefs.setDouble('user_longitude', position.longitude);
+      
+      // Calculate distances with new location
+      _calculateDistances();
     } catch (e) {
       setState(() {
         _isLoadingLocation = false;
@@ -115,6 +124,108 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
     } else {
       return '${distance.toStringAsFixed(1)} km away';
     }
+  }
+
+  // Method to fetch pharmacies from Firebase Realtime Database
+  Future<void> _fetchPharmacies() async {
+    try {
+      setState(() {
+        _isLoadingPharmacies = true;
+        _pharmacyError = null;
+      });
+
+      final DatabaseReference pharmaciesRef = FirebaseDatabase.instance.ref('pharmacies');
+      final DataSnapshot snapshot = await pharmaciesRef.get();
+
+      if (snapshot.exists && snapshot.value != null) {
+        final Map<dynamic, dynamic> pharmaciesData = snapshot.value as Map<dynamic, dynamic>;
+        final List<Map<String, dynamic>> pharmaciesList = [];
+
+        pharmaciesData.forEach((key, value) {
+          if (value is Map) {
+            final pharmacy = Map<String, dynamic>.from(value);
+            final location = pharmacy['location'] as Map<dynamic, dynamic>?;
+            
+            // Extract location coordinates
+            double? latitude;
+            double? longitude;
+            if (location != null) {
+              latitude = (location['latitude'] as num?)?.toDouble();
+              longitude = (location['longitude'] as num?)?.toDouble();
+            }
+
+            // Map Firebase data to UI format
+            pharmaciesList.add({
+              'id': pharmacy['id'] ?? key.toString(),
+              'name': pharmacy['name'] ?? 'Unknown Pharmacy',
+              'address': pharmacy['address'] ?? 'Address not available',
+              'rating': (pharmacy['rating'] ?? 0.0).toString(),
+              'status': (pharmacy['isOpen'] == true) ? 'Open' : 'Closed',
+              'statusColor': (pharmacy['isOpen'] == true) ? Colors.green : Colors.red,
+              'phone': pharmacy['contactNumber'] ?? '',
+              'latitude': latitude,
+              'longitude': longitude,
+              'distanceText': pharmacy['distanceText'] ?? 'Distance unknown',
+            });
+          }
+        });
+
+        setState(() {
+          _pharmacies = pharmaciesList;
+          _isLoadingPharmacies = false;
+        });
+
+        // Calculate distances if user location is available
+        _calculateDistances();
+      } else {
+        setState(() {
+          _pharmacies = [];
+          _isLoadingPharmacies = false;
+          _pharmacyError = 'No pharmacies found in database';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoadingPharmacies = false;
+        _pharmacyError = 'Error fetching pharmacies: $e';
+        _pharmacies = [];
+      });
+    }
+  }
+
+  // Calculate distances for pharmacies if user location is available
+  void _calculateDistances() {
+    if (_userLatitude == null || _userLongitude == null) {
+      return;
+    }
+
+    setState(() {
+      for (var pharmacy in _pharmacies) {
+        final double? lat = pharmacy['latitude'] as double?;
+        final double? lng = pharmacy['longitude'] as double?;
+
+        if (lat != null && lng != null) {
+          double distance = _calculateDistance(
+            _userLatitude!,
+            _userLongitude!,
+            lat,
+            lng,
+          );
+          pharmacy['distance'] = distance;
+          pharmacy['distanceString'] = _formatDistance(distance);
+        } else {
+          pharmacy['distance'] = 999.0;
+          pharmacy['distanceString'] = pharmacy['distanceText'] ?? 'Distance unknown';
+        }
+      }
+
+      // Sort pharmacies by distance
+      _pharmacies.sort((a, b) {
+        final double distA = a['distance'] as double? ?? 999.0;
+        final double distB = b['distance'] as double? ?? 999.0;
+        return distA.compareTo(distB);
+      });
+    });
   }
 
 
@@ -167,91 +278,16 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Pharmacy data with coordinates (latitude, longitude)
-    // These are example coordinates for Mumbai area - in a real app, these would come from an API
-    List<Map<String, dynamic>> pharmacies = [
-      {
-        'name': 'Apollo Pharmacy',
-        'latitude': 19.0596,
-        'longitude': 72.8295,
-        'rating': '4.5',
-        'address': 'Shop No. 12, Linking Road, Bandra West, Mumbai',
-        'status': 'Open',
-        'statusColor': Colors.green,
-        'phone': '9876543210',
-      },
-      {
-        'name': 'MedPlus Pharmacy',
-        'latitude': 19.0550,
-        'longitude': 72.8260,
-        'rating': '4.2',
-        'address': 'Ground Floor, Hill Road, Bandra West, Mumbai',
-        'status': 'Open',
-        'statusColor': Colors.green,
-        'phone': '9876543211',
-      },
-      {
-        'name': '1mg Pharmacy',
-        'latitude': 19.0520,
-        'longitude': 72.8280,
-        'rating': '4.3',
-        'address': 'Turner Road, Bandra West, Mumbai',
-        'status': 'Closed',
-        'statusColor': Colors.red,
-        'phone': '9876543212',
-      },
-      {
-        'name': 'Wellness Forever',
-        'latitude': 19.0650,
-        'longitude': 72.8320,
-        'rating': '4.6',
-        'address': 'Main Road, Khar West, Mumbai',
-        'status': 'Open',
-        'statusColor': Colors.green,
-        'phone': '9876543213',
-      },
-      {
-        'name': 'Fortis Pharmacy',
-        'latitude': 19.0700,
-        'longitude': 72.8400,
-        'rating': '4.4',
-        'address': 'SV Road, Santacruz West, Mumbai',
-        'status': 'Open',
-        'statusColor': Colors.green,
-        'phone': '9876543214',
-      },
-      {
-        'name': 'Guardian Pharmacy',
-        'latitude': 19.0450,
-        'longitude': 72.8200,
-        'rating': '4.7',
-        'address': 'Waterfield Road, Bandra West, Mumbai',
-        'status': 'Open',
-        'statusColor': Colors.green,
-        'phone': '9876543215',
-      },
-    ];
+    // Create a filtered list from fetched pharmacies
+    List<Map<String, dynamic>> pharmacies = List.from(_pharmacies);
 
-    // Calculate distances and add to pharmacy data if user location is available
-    if (_userLatitude != null && _userLongitude != null) {
-      for (var pharmacy in pharmacies) {
-        double distance = _calculateDistance(
-          _userLatitude!,
-          _userLongitude!,
-          pharmacy['latitude'] as double,
-          pharmacy['longitude'] as double,
-        );
-        pharmacy['distance'] = distance;
-        pharmacy['distanceString'] = _formatDistance(distance);
+    // Ensure all pharmacies have distance values for filtering
+    for (var pharmacy in pharmacies) {
+      if (!pharmacy.containsKey('distance')) {
+        pharmacy['distance'] = 999.0;
       }
-
-      // Sort pharmacies by distance
-      pharmacies.sort((a, b) => (a['distance'] as double).compareTo(b['distance'] as double));
-    } else {
-      // If no location, use default distance strings
-      for (var pharmacy in pharmacies) {
-        pharmacy['distance'] = 999.0; // Large number for sorting
-        pharmacy['distanceString'] = 'Distance unknown';
+      if (!pharmacy.containsKey('distanceString')) {
+        pharmacy['distanceString'] = pharmacy['distanceText'] ?? 'Distance unknown';
       }
     }
 
@@ -259,7 +295,8 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
     if (_selectedDistanceFilter != null) {
       double maxDistance = double.parse(_selectedDistanceFilter!.replaceAll(' km', ''));
       pharmacies = pharmacies.where((pharmacy) {
-        return (pharmacy['distance'] as double) <= maxDistance;
+        final double distance = pharmacy['distance'] as double? ?? 999.0;
+        return distance <= maxDistance;
       }).toList();
     }
 
@@ -329,6 +366,10 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
                         setState(() {
                           _selectedDistanceFilter = newValue;
                         });
+                        // Recalculate distances in case location was just obtained
+                        if (_userLatitude != null && _userLongitude != null) {
+                          _calculateDistances();
+                        }
                       },
                     ),
                   ),
@@ -362,6 +403,37 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
                 ],
               ),
             ),
+            if (_isLoadingPharmacies)
+              const Padding(
+                padding: EdgeInsets.all(16.0),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (_pharmacyError != null)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Card(
+                  color: Colors.red.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      children: [
+                        Icon(Icons.error_outline, color: Colors.red.shade700),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _pharmacyError!,
+                            style: TextStyle(color: Colors.red.shade800),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _fetchPharmacies,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
               child: Row(
@@ -439,11 +511,73 @@ class _MedicineFinderScreenState extends State<MedicineFinderScreen> {
                   ),
                 ),
               ),
-            if (pharmacies.isEmpty)
+            if (_isLoadingPharmacies)
               const Padding(
                 padding: EdgeInsets.all(16.0),
                 child: Center(
-                  child: Text('No pharmacies found matching your filters.'),
+                  child: Column(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('Loading pharmacies...'),
+                    ],
+                  ),
+                ),
+              )
+            else if (_pharmacyError != null)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Card(
+                  color: Colors.red.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.error_outline, color: Colors.red.shade700),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                _pharmacyError!,
+                                style: TextStyle(color: Colors.red.shade800),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            _fetchPharmacies();
+                          },
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Retry'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade700,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else if (pharmacies.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Icon(Icons.local_pharmacy_outlined, size: 64, color: Colors.grey[400]),
+                      const SizedBox(height: 16),
+                      Text(
+                        _pharmacies.isEmpty
+                            ? 'No pharmacies found in database.'
+                            : 'No pharmacies found matching your filters.',
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
                 ),
               )
             else
