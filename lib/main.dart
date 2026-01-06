@@ -1,32 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+
 import 'package:arogya_sos_app/screens/emergency_sos_screen.dart';
 import 'package:arogya_sos_app/screens/medicine_finder_screen.dart';
 import 'package:arogya_sos_app/screens/first_aid_guides_screen.dart';
 import 'package:arogya_sos_app/screens/profile_settings_screen.dart';
+import 'package:arogya_sos_app/screens/emergency_chatbot_screen.dart';
+
 import 'package:arogya_sos_app/services/firebase_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   try {
-    // Initialize Firebase
-    // Note: After running 'flutterfire configure', uncomment the line below
-    // and import 'firebase_options.dart':
-    // await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-    
-    // For now, initialize without options (will work if firebase_options.dart exists)
     await Firebase.initializeApp();
-    
-    // Initialize default guides if database is empty
+
     final firebaseService = FirebaseService();
     await firebaseService.initializeDefaultGuides();
   } catch (e) {
-    // Handle Firebase initialization errors
     debugPrint('Firebase initialization error: $e');
     debugPrint('Please run: flutterfire configure');
   }
-  
+
   runApp(const ArogyaSOSApp());
 }
 
@@ -41,10 +36,10 @@ class _ArogyaSOSAppState extends State<ArogyaSOSApp> {
   int _selectedIndex = 0;
 
   static final List<Widget> _widgetOptions = <Widget>[
-    const EmergencySOSScreen(),
-    const MedicineFinderScreen(),
-    const FirstAidGuidesScreen(),
-    const ProfileSettingsScreen(),
+    EmergencySOSScreen(),
+    MedicineFinderScreen(),
+    FirstAidGuidesScreen(),
+    ProfileSettingsScreen(),
   ];
 
   void _onItemTapped(int index) {
@@ -85,6 +80,22 @@ class _ArogyaSOSAppState extends State<ArogyaSOSApp> {
         body: Center(
           child: _widgetOptions.elementAt(_selectedIndex),
         ),
+
+        // 🔴 FLOATING CHATBOT BUTTON (ADDED)
+        floatingActionButton: Builder(
+          builder: (innerContext) => FloatingActionButton(
+            backgroundColor: Colors.red,
+            child: const Icon(Icons.chat),
+            onPressed: () {
+              Navigator.of(innerContext).push(
+                MaterialPageRoute(
+                  builder: (_) => const EmergencyChatbotScreen(),
+                ),
+              );
+            },
+          ),
+        ),
+
         bottomNavigationBar: Container(
           decoration: const BoxDecoration(
             color: Colors.white,
